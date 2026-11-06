@@ -46,6 +46,24 @@
   :type 'directory
   :group 'agent-shell-tramp)
 
+(defcustom agent-shell-tramp-startup-delay 1.5
+  "Seconds to wait after starting a remote agent before writing to it.
+
+TRAMP launches a remote process by writing an \"exec\" line into the
+already-open remote shell, and returns without waiting for that shell to
+act on it.  TRAMP also puts the connection's pty into non-canonical mode
+\(\"stty -icanon min 1\"), so a single read on the remote side returns
+whatever has arrived rather than one line.  A JSON-RPC message written
+immediately afterwards therefore lands in the same read as the \"exec\"
+line and is discarded when the shell execs, leaving the agent waiting
+for an \"initialize\" it never received.
+
+Waiting here lets the remote shell exec before acp.el sends its first
+message.  Raise this on slow or high-latency connections."
+  :type 'number
+  :group 'agent-shell-tramp)
+
+(declare-function acp--start-client "acp")
 (declare-function agent-shell-cwd "agent-shell")
 (declare-function tramp-dissect-file-name "tramp")
 (declare-function tramp-file-name-host "tramp")
@@ -146,6 +164,16 @@ Use FALLBACK when STRING is nil or empty."
       (expand-file-name (format-time-string "%F-%H-%M-%S.md") dir))
     (agent-shell--default-transcript-file-path)))
 
+(defun agent-shell-tramp--settle-after-start (&rest _args)
+  "Wait for a freshly started remote agent to be ready for input.
+
+Advises `acp--start-client' so the pause happens between TRAMP
+launching the agent and acp.el writing its first JSON-RPC message.  Does
+nothing for local agents.  See `agent-shell-tramp-startup-delay'."
+  (when (and (file-remote-p default-directory)
+             (> agent-shell-tramp-startup-delay 0))
+    (sleep-for agent-shell-tramp-startup-delay)))
+
 (defun agent-shell-tramp--enable ()
   "Enable agent-shell TRAMP integration."
   (agent-shell-tramp--check-acp-support)
@@ -155,6 +183,7 @@ Use FALLBACK when STRING is nil or empty."
      agent-shell-tramp--orig-transcript-file-path-function agent-shell-transcript-file-path-function
      agent-shell-path-resolver-function #'agent-shell-tramp-resolve-path
      agent-shell-transcript-file-path-function #'agent-shell-tramp-transcript-file-path)
+    (advice-add 'acp--start-client :after #'agent-shell-tramp--settle-after-start)
     (setq agent-shell-tramp--enabled t)))
 
 (defun agent-shell-tramp--disable ()
@@ -165,6 +194,7 @@ Use FALLBACK when STRING is nil or empty."
      agent-shell-transcript-file-path-function agent-shell-tramp--orig-transcript-file-path-function
      agent-shell-tramp--orig-path-resolver-function nil
      agent-shell-tramp--orig-transcript-file-path-function nil)
+    (advice-remove 'acp--start-client #'agent-shell-tramp--settle-after-start)
     (setq agent-shell-tramp--enabled nil)))
 
 ;;;###autoload
